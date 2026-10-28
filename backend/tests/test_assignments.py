@@ -1,7 +1,6 @@
 """Unit tests for TASK-M2-02: assignments management (US 2.7)."""
 
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
