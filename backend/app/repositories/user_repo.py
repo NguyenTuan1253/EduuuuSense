@@ -309,7 +309,7 @@ class UserRepository:
         set_clause = ", ".join(f"{column} = :{column}" for column in safe_changes)
         params: dict[str, Any] = {**safe_changes, "user_id": user_id}
         async with self._session.begin():
-            result = await self._session.execute(
+            await self._session.execute(
                 text(
                     "INSERT INTO user_profiles (user_id, full_name) "
                     "VALUES (:user_id, COALESCE(:full_name, '')) "
