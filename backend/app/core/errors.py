@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -62,11 +63,14 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+        # jsonable_encoder strips non-serializable context objects (e.g. the
+        # raw ValueError instances Pydantic v2 embeds in ctx) so the envelope
+        # itself can never raise while reporting a validation failure.
         return create_error_response(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             code="VALIDATION_ERROR",
             message="Request input validation failed.",
-            details=exc.errors(),
+            details=jsonable_encoder(exc.errors()),
         )
 
     @app.exception_handler(Exception)
