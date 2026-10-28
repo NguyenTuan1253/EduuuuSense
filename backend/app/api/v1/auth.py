@@ -128,6 +128,12 @@ class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=1, max_length=2048)
 
 
+class SocialLoginRequest(BaseModel):
+    """Google ID token issued to the client by Google Identity Services."""
+
+    id_token: str = Field(min_length=16, max_length=4096)
+
+
 class LogoutRequest(BaseModel):
     refresh_token: str = Field(min_length=1, max_length=2048)
 
@@ -242,6 +248,36 @@ async def logout(
 ) -> SuccessResponse:
     await service.logout_session(refresh_token=payload.refresh_token)
     return SuccessResponse()
+
+
+@router.post(
+    "/social/google",
+    response_model=TokenPairResponse,
+    summary="Sign in with a Google-verified identity (US 2.1/2.2, DECISION-PO-01)",
+)
+async def social_google(
+    payload: SocialLoginRequest,
+    request: Request,
+    service: AuthService = Depends(get_auth_service),
+) -> TokenPairResponse:
+    user_agent = (request.headers.get("user-agent") or "")[:512] or None
+    client_host = request.client.host if request.client else None
+    try:
+        tokens = await service.login_with_google(
+            id_token=payload.id_token, user_agent=user_agent, ip_address=client_host
+        )
+    except InvalidCredentialsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google sign-in failed.",
+        ) from exc
+    except AccountSuspendedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been suspended.",
+        ) from exc
+
+    return TokenPairResponse(data=TokenPair(**tokens))
 
 
 class PasswordResetRequest(BaseModel):

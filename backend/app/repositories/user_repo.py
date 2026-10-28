@@ -112,6 +112,55 @@ class UserRepository:
             row = result.mappings().one_or_none()
         return dict(row) if row else None
 
+    async def create_social_user(
+        self, *, email: str, full_name: str, password_hash: str, role_name: str = "student"
+    ) -> dict[str, Any]:
+        """Atomically create a social-login account (email pre-verified by provider).
+
+        The password hash is an unusable random value; the schema has no
+        provider column (Source-of-Truth Gap 11), so identity rests on the
+        verified provider email.
+        """
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "INSERT INTO users (email, password_hash, is_email_verified) "
+                    "VALUES (:email, :password_hash, TRUE) "
+                    "RETURNING id, email, is_email_verified, is_active"
+                ),
+                {"email": email, "password_hash": password_hash},
+            )
+            user_row = result.mappings().one()
+
+            await self._session.execute(
+                text(
+                    "INSERT INTO user_profiles (user_id, full_name) VALUES (:user_id, :full_name)"
+                ),
+                {"user_id": user_row["id"], "full_name": full_name},
+            )
+
+            role_result = await self._session.execute(
+                text("SELECT id FROM roles WHERE name = :name"),
+                {"name": role_name},
+            )
+            role_id = role_result.scalar_one_or_none()
+            if role_id is None:
+                raise ValueError(f"Required role is missing from the seeded roles: {role_name}")
+
+            await self._session.execute(
+                text(
+                    "INSERT INTO user_roles (user_id, role_id) VALUES (:user_id, :role_id)"
+                ),
+                {"user_id": user_row["id"], "role_id": role_id},
+            )
+
+        return {
+            "id": str(user_row["id"]),
+            "email": user_row["email"],
+            "is_email_verified": user_row["is_email_verified"],
+            "is_active": user_row["is_active"],
+        }
+
     async def update_last_login(self, user_id: str) -> None:
         """Record a successful login timestamp."""
         async with self._session.begin():

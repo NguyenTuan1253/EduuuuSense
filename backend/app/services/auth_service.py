@@ -4,9 +4,11 @@ Layering: the service orchestrates repositories and security primitives; it
 never executes SQL and never touches HTTP concerns (status codes, envelopes).
 """
 
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.clients.google_oauth import GoogleOAuthError
 from app.core.config import settings
 from app.core.security import (
     InvalidTokenError,
@@ -71,9 +73,11 @@ class AuthService:
         self,
         user_repo: UserRepository,
         audit_repo: AuditRepository | None = None,
+        google_client: Any | None = None,
     ) -> None:
         self._user_repo = user_repo
         self._audit_repo = audit_repo
+        self._google_client = google_client
 
     @classmethod
     def from_session(cls, session: Any) -> "AuthService":
@@ -83,7 +87,13 @@ class AuthService:
         on services exclusively (architecture invariant: routers never import
         repositories).
         """
-        return cls(user_repo=UserRepository(session), audit_repo=AuditRepository(session))
+        from app.clients.google_oauth import GoogleOAuthClient
+
+        return cls(
+            user_repo=UserRepository(session),
+            audit_repo=AuditRepository(session),
+            google_client=GoogleOAuthClient(),
+        )
 
     async def _enforce_login_rate_limit(self, *, identifier_hash: str) -> None:
         """Raise TooManyAttemptsError when the identifier is locked out (NFR04).
@@ -202,6 +212,19 @@ class AuthService:
         if not user["is_active"]:
             raise AccountSuspendedError("This account has been suspended.")
 
+        return await self._issue_session(
+            user, identifier_hash=identifier_hash, user_agent=user_agent, ip_address=ip_address
+        )
+
+    async def _issue_session(
+        self,
+        user: dict[str, Any],
+        *,
+        identifier_hash: str,
+        user_agent: str | None,
+        ip_address: str | None,
+    ) -> dict[str, Any]:
+        """Mint the token pair, persist the refresh session, record evidence."""
         access_token = create_access_token(str(user["id"]))
         refresh_token = create_refresh_token(str(user["id"]))
         expires_at = datetime.now(tz=UTC) + timedelta(days=settings.refresh_token_expire_days)
@@ -225,6 +248,51 @@ class AuthService:
             "token_type": "bearer",
             "expires_in": settings.access_token_expire_minutes * 60,
         }
+
+    async def login_with_google(
+        self,
+        *,
+        id_token: str,
+        user_agent: str | None = None,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        """Sign in (or auto-register) via a verified Google identity.
+
+        The schema has no provider column (Source-of-Truth Gap 11): identity
+        rests on the Google-verified email. Unknown emails are auto-registered
+        with an unusable random password and email pre-verified. Rate limiting
+        is not applied to verified-identity logins.
+        """
+        if self._google_client is None:
+            raise InvalidCredentialsError("Google sign-in is not available.")
+        try:
+            claims = await self._google_client.verify_id_token(id_token)
+        except GoogleOAuthError as exc:
+            raise InvalidCredentialsError("Google sign-in failed.") from exc
+
+        # Defense in depth: the service itself refuses claims it cannot act on,
+        # independent of the client's own validation.
+        email = str(claims.get("email") or "").strip().lower()
+        if not email or claims.get("email_verified") not in (True, "true", "True"):
+            raise InvalidCredentialsError("Google sign-in failed.")
+
+        user = await self._user_repo.get_user_by_email(email)
+        if user is None:
+            full_name = (claims.get("name") or email.split("@", 1)[0])[:150]
+            user = await self._user_repo.create_social_user(
+                email=email,
+                full_name=full_name,
+                password_hash=hash_password(secrets.token_urlsafe(32)),
+            )
+        if not user["is_active"]:
+            raise AccountSuspendedError("This account has been suspended.")
+
+        return await self._issue_session(
+            user,
+            identifier_hash=hash_verification_token(email),
+            user_agent=user_agent,
+            ip_address=ip_address,
+        )
 
     async def refresh_access_token(self, *, refresh_token: str) -> dict[str, Any]:
         """Issue a new access token from a valid, unrevoked refresh session.
