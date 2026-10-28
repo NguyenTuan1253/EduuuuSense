@@ -149,15 +149,22 @@ class DocumentService:
         status: str | None = None,
         file_type: str | None = None,
         title_query: str | None = None,
+        tag_name: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        if tag_name:
+            tag = await self._document_repo.get_or_create_tag(user_id, tag_name)
+            tag_id: str | None = str(tag["id"])
+        else:
+            tag_id = None
         return await self._document_repo.list_documents(
             user_id,
             course_id=course_id,
             status=status,
             file_type=file_type,
             title_query=title_query,
+            tag_id=tag_id,
             limit=min(limit, 100),
             offset=max(offset, 0),
         )
@@ -181,6 +188,39 @@ class DocumentService:
             raise DocumentNotFoundError("Document not found.")
         await run_storage_op(self._storage.remove_object, deleted["storage_object_key"])
         return {"deleted": True}
+
+
+    async def attach_tag(self, user_id: str, document_id: str, tag_name: str) -> dict[str, Any]:
+        """Attach (create-or-get) a tag to an owned document. Idempotent."""
+        if not tag_name.strip():
+            raise DocumentValidationError("Tag name must not be blank.")
+        document = await self._document_repo.get_document(user_id, document_id)
+        if document is None:
+            raise DocumentNotFoundError("Document not found.")
+        tag = await self._document_repo.get_or_create_tag(user_id, tag_name)
+        await self._document_repo.attach_tag(user_id, document_id, str(tag["id"]))
+        return {"document_id": str(document["id"]), "tag": tag}
+
+    async def detach_tag(self, user_id: str, document_id: str, tag_id: str) -> dict[str, Any]:
+        detached = await self._document_repo.detach_tag(user_id, document_id, tag_id)
+        if not detached:
+            raise DocumentNotFoundError("Tag is not attached to this document.")
+        return {"detached": True}
+
+    async def list_document_tags(self, user_id: str, document_id: str) -> list[dict[str, Any]]:
+        document = await self._document_repo.get_document(user_id, document_id)
+        if document is None:
+            raise DocumentNotFoundError("Document not found.")
+        return await self._document_repo.list_document_tags(user_id, document_id)
+
+    async def list_documents_by_tag(
+        self, user_id: str, tag_name: str, **filters: Any
+    ) -> list[dict[str, Any]]:
+        """Search documents carrying a tag (tag names normalized on lookup)."""
+        tag = await self._document_repo.get_or_create_tag(user_id, tag_name)
+        return await self._document_repo.list_documents(
+            user_id, tag_id=str(tag["id"]), **filters
+        )
 
 
 def _content_type_for(file_type: str) -> str:

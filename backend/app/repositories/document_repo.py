@@ -73,6 +73,7 @@ class DocumentRepository:
         status: str | None = None,
         file_type: str | None = None,
         title_query: str | None = None,
+        tag_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -91,6 +92,12 @@ class DocumentRepository:
         if title_query:
             clauses.append("d.title ILIKE :title_query")
             params["title_query"] = f"%{title_query}%"
+        if tag_id is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM document_tags dt WHERE dt.document_id = d.id "
+                "AND dt.tag_id = :tag_id AND dt.user_id = :user_id)"
+            )
+            params["tag_id"] = tag_id
         where = " AND ".join(clauses)
 
         async with self._session.begin():
@@ -181,3 +188,92 @@ class DocumentRepository:
             )
             marked = int(getattr(result, "rowcount", 0) or 0) > 0
         return marked
+
+    async def get_or_create_tag(self, user_id: str, name: str) -> dict[str, Any]:
+        """Create-or-fetch a user tag; normalized_name drives uniqueness."""
+        normalized = name.strip().lower()
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "INSERT INTO tags (user_id, name, normalized_name) "
+                    "VALUES (:user_id, :name, :normalized_name) "
+                    "ON CONFLICT (user_id, normalized_name) DO UPDATE SET name = EXCLUDED.name "
+                    "RETURNING id, user_id, name, normalized_name"
+                ),
+                {"user_id": user_id, "name": name.strip(), "normalized_name": normalized},
+            )
+            row = result.mappings().one()
+        return dict(row)
+
+    async def attach_tag(self, user_id: str, document_id: str, tag_id: str) -> bool:
+        """Attach an owned tag to an owned document (idempotent)."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "INSERT INTO document_tags (document_id, tag_id, user_id) "
+                    "SELECT :document_id, :tag_id, :user_id "
+                    "WHERE EXISTS (SELECT 1 FROM documents WHERE id = :document_id AND user_id = :user_id) "
+                    "AND EXISTS (SELECT 1 FROM tags WHERE id = :tag_id AND user_id = :user_id) "
+                    "ON CONFLICT (document_id, tag_id) DO NOTHING"
+                ),
+                {"document_id": document_id, "tag_id": tag_id, "user_id": user_id},
+            )
+            attached = int(getattr(result, "rowcount", 0) or 0) > 0
+        return attached
+
+    async def detach_tag(self, user_id: str, document_id: str, tag_id: str) -> bool:
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "DELETE FROM document_tags dt "
+                    "USING documents d, tags t "
+                    "WHERE dt.document_id = d.id AND dt.tag_id = t.id "
+                    "AND dt.user_id = :user_id AND d.user_id = :user_id AND t.user_id = :user_id "
+                    "AND dt.document_id = :document_id AND dt.tag_id = :tag_id"
+                ),
+                {"document_id": document_id, "tag_id": tag_id, "user_id": user_id},
+            )
+            detached = int(getattr(result, "rowcount", 0) or 0) > 0
+        return detached
+
+    async def list_document_tags(self, user_id: str, document_id: str) -> list[dict[str, Any]]:
+        """Tags of an owned document."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT t.id, t.name, t.normalized_name "
+                    "FROM document_tags dt "
+                    "JOIN tags t ON t.id = dt.tag_id AND t.user_id = dt.user_id "
+                    "JOIN documents d ON d.id = dt.document_id AND d.user_id = dt.user_id "
+                    "WHERE dt.document_id = :document_id AND dt.user_id = :user_id "
+                    "ORDER BY t.normalized_name ASC"
+                ),
+                {"document_id": document_id, "user_id": user_id},
+            )
+            rows = result.mappings().all()
+        return [dict(row) for row in rows]
+
+    async def list_tag_ids_for_document(self, user_id: str, document_id: str) -> list[str]:
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT dt.tag_id FROM document_tags dt "
+                    "WHERE dt.document_id = :document_id AND dt.user_id = :user_id"
+                ),
+                {"document_id": document_id, "user_id": user_id},
+            )
+            ids = [str(r[0]) for r in result.all()]
+        return ids
+
+    async def list_document_ids_for_tag(self, user_id: str, tag_id: str) -> list[str]:
+        """IDs of the owner's documents carrying the tag."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT dt.document_id FROM document_tags dt "
+                    "WHERE dt.tag_id = :tag_id AND dt.user_id = :user_id"
+                ),
+                {"tag_id": tag_id, "user_id": user_id},
+            )
+            ids = [str(r[0]) for r in result.all()]
+        return ids

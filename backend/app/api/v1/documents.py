@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.database import async_session_factory
 from app.services.document_service import (
@@ -117,6 +117,7 @@ async def list_documents(
     ),
     file_type: str | None = Query(default=None, pattern="^(pdf|docx|png|jpg|jpeg)$"),
     title_query: str | None = Query(default=None, alias="q", max_length=100),
+    tag: str | None = Query(default=None, max_length=100),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> DocumentListResponse:
@@ -126,10 +127,69 @@ async def list_documents(
         status=doc_status,
         file_type=file_type,
         title_query=title_query,
+        tag_name=tag,
         limit=limit,
         offset=offset,
     )
     return DocumentListResponse(data=[_to_data(r) for r in rows])
+
+
+class TagAttachmentResponse(BaseModel):
+    success: bool = True
+    data: dict[str, Any]
+
+
+class TagListResponse(BaseModel):
+    success: bool = True
+    data: list[dict[str, Any]]
+
+
+class TagAttachRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+@router.get("/{document_id}/tags", response_model=TagListResponse)
+async def list_document_tags(
+    document_id: str,
+    user_id: Annotated[str, Depends(get_current_user_id)],
+    service: Annotated[DocumentService, Depends(get_document_service)],
+) -> TagListResponse:
+    try:
+        tags = await service.list_document_tags(user_id, document_id)
+    except DocumentNotFoundError as exc:
+        raise _map_service_errors(exc) from exc
+    return TagListResponse(data=tags)
+
+
+@router.post("/{document_id}/tags", response_model=TagAttachmentResponse, status_code=status.HTTP_201_CREATED)
+async def attach_tag(
+    document_id: str,
+    payload: TagAttachRequest,
+    user_id: Annotated[str, Depends(get_current_user_id)],
+    service: Annotated[DocumentService, Depends(get_document_service)],
+) -> TagAttachmentResponse:
+    """Create-or-get + attach; repeated calls are idempotent."""
+    try:
+        result = await service.attach_tag(user_id, document_id, payload.name)
+    except DocumentValidationError as exc:
+        raise _map_service_errors(exc) from exc
+    except DocumentNotFoundError as exc:
+        raise _map_service_errors(exc) from exc
+    return TagAttachmentResponse(data=result)
+
+
+@router.delete("/{document_id}/tags/{tag_id}", response_model=DeleteResponse)
+async def detach_tag(
+    document_id: str,
+    tag_id: str,
+    user_id: Annotated[str, Depends(get_current_user_id)],
+    service: Annotated[DocumentService, Depends(get_document_service)],
+) -> DeleteResponse:
+    try:
+        result = await service.detach_tag(user_id, document_id, tag_id)
+    except DocumentNotFoundError as exc:
+        raise _map_service_errors(exc) from exc
+    return DeleteResponse(data=result)
 
 
 @router.get("/{document_id}/download", response_model=DownloadResponse)
