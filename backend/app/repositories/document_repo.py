@@ -136,3 +136,48 @@ class DocumentRepository:
             )
             row = result.mappings().one_or_none()
         return dict(row) if row else None
+
+    async def claim_for_processing(self, document_id: str) -> bool:
+        """Atomically claim a pending document (pending -> processing)."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "UPDATE documents SET status = 'processing', updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :document_id AND status = 'pending'"
+                ),
+                {"document_id": document_id},
+            )
+            claimed = int(getattr(result, "rowcount", 0) or 0) > 0
+        return claimed
+
+    async def mark_embedded(self, document_id: str, total_chunks: int) -> bool:
+        """Mark embedded ONLY when every chunk is persisted (Invariant).
+
+        Sets chunks_processed = total_chunks so the embedded status is valid.
+        """
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "UPDATE documents SET status = 'embedded', total_chunks = :total_chunks, "
+                    "chunks_processed = :total_chunks, processing_error_code = NULL, "
+                    "updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :document_id AND status = 'processing'"
+                ),
+                {"document_id": document_id, "total_chunks": total_chunks},
+            )
+            marked = int(getattr(result, "rowcount", 0) or 0) > 0
+        return marked
+
+    async def mark_failed(self, document_id: str, error_code: str) -> bool:
+        """Mark a processing document failed with a stable error code."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "UPDATE documents SET status = 'failed', processing_error_code = :error_code, "
+                    "updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :document_id AND status IN ('pending', 'processing')"
+                ),
+                {"document_id": document_id, "error_code": error_code},
+            )
+            marked = int(getattr(result, "rowcount", 0) or 0) > 0
+        return marked
