@@ -383,3 +383,56 @@ class UserRepository:
             )
             row = row_result.mappings().one()
         return dict(row)
+
+    async def user_has_role(self, user_id: str, role_name: str) -> bool:
+        """RBAC check: does the user hold the named role?"""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT 1 FROM user_roles ur "
+                    "JOIN roles r ON r.id = ur.role_id "
+                    "WHERE ur.user_id = :user_id AND r.name = :role_name LIMIT 1"
+                ),
+                {"user_id": user_id, "role_name": role_name},
+            )
+            found = result.scalar_one_or_none() is not None
+        return found
+
+    async def list_accounts(
+        self, *, search: str | None = None, is_active: bool | None = None, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Admin listing of accounts with optional search/active filters."""
+        clauses = ["TRUE"]
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if search:
+            clauses.append("(u.email ILIKE :search OR p.full_name ILIKE :search)")
+            params["search"] = f"%{search}%"
+        if is_active is not None:
+            clauses.append("u.is_active = :is_active")
+            params["is_active"] = is_active
+        where = " AND ".join(clauses)
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT u.id, u.email, u.is_active, u.is_email_verified, "
+                    "u.current_plan_code, u.last_login_at, u.created_at, p.full_name "
+                    "FROM users u LEFT JOIN user_profiles p ON p.user_id = u.id "
+                    f"WHERE {where} ORDER BY u.created_at DESC LIMIT :limit OFFSET :offset"
+                ),
+                params,
+            )
+            rows = result.mappings().all()
+        return [dict(row) for row in rows]
+
+    async def set_account_active(self, user_id: str, is_active: bool) -> bool:
+        """Suspend/activate an account (Admin action)."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "UPDATE users SET is_active = :is_active, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :user_id"
+                ),
+                {"user_id": user_id, "is_active": is_active},
+            )
+            updated = int(getattr(result, "rowcount", 0) or 0) > 0
+        return updated

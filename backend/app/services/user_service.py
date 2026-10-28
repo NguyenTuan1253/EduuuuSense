@@ -71,3 +71,54 @@ class UserService:
         """Plan code for quota decisions; unknown subjects default to free."""
         row = await self._user_repo.get_user_with_profile(user_id)
         return str(row["current_plan_code"]) if row else "free"
+
+async def require_admin(
+    user_id: Annotated[str, Depends(get_current_user_id)],
+) -> str:
+    """RBAC gate: only System Administrators pass (US 2.5: 403, no details)."""
+    from fastapi import HTTPException
+    from fastapi import status as http_status
+
+    from app.core.database import async_session_factory
+
+    async with async_session_factory() as session:
+        service = AdminUserService.from_session(session)
+        has_role = await service.user_has_role(user_id, "admin")
+    if not has_role:
+        raise HTTPException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            detail="Forbidden.",
+        )
+    return user_id
+
+
+class AdminUserService:
+    """Admin account management (US 2.22)."""
+
+    def __init__(self, user_repo: UserRepository) -> None:
+        self._user_repo = user_repo
+
+    @classmethod
+    def from_session(cls, session: Any) -> "AdminUserService":
+        """Compose over one session."""
+        return cls(user_repo=UserRepository(session))
+
+    async def user_has_role(self, user_id: str, role_name: str) -> bool:
+        return await self._user_repo.user_has_role(user_id, role_name)
+
+    async def list_accounts(
+        self, *, search: str | None = None, is_active: bool | None = None, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        return await self._user_repo.list_accounts(
+            search=search, is_active=is_active, limit=min(limit, 100), offset=max(offset, 0)
+        )
+
+    async def set_account_active(self, admin_id: str, user_id: str, is_active: bool) -> dict[str, Any]:
+        """Suspend/activate; suspending also revokes all sessions (security)."""
+        updated = await self._user_repo.set_account_active(user_id, is_active)
+        if not updated:
+            raise LookupError("Account not found.")
+        revoked = 0
+        if not is_active:
+            revoked = await self._user_repo.revoke_all_refresh_sessions(user_id)
+        return {"user_id": user_id, "is_active": is_active, "sessions_revoked": revoked}
