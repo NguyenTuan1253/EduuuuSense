@@ -185,3 +185,91 @@ class UserRepository:
                 ),
                 {"session_id": session_id},
             )
+
+    async def create_verification_token(
+        self,
+        *,
+        user_id: str,
+        purpose: str,
+        token_hash: str,
+        expires_at: datetime,
+    ) -> str:
+        """Persist a hashed single-use verification token (email/reset)."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "INSERT INTO verification_tokens (user_id, purpose, token_hash, expires_at) "
+                    "VALUES (:user_id, :purpose, :token_hash, :expires_at) "
+                    "RETURNING id"
+                ),
+                {
+                    "user_id": user_id,
+                    "purpose": purpose,
+                    "token_hash": token_hash,
+                    "expires_at": expires_at,
+                },
+            )
+            token_id = str(result.scalar_one())
+        return token_id
+
+    async def get_verification_token_by_hash(
+        self, token_hash: str, purpose: str
+    ) -> dict[str, Any] | None:
+        """Fetch an unconsumed token row by hash for the given purpose."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT id, user_id, purpose, token_hash, expires_at, consumed_at, attempt_count "
+                    "FROM verification_tokens "
+                    "WHERE token_hash = :token_hash AND purpose = :purpose"
+                ),
+                {"token_hash": token_hash, "purpose": purpose},
+            )
+            row = result.mappings().one_or_none()
+        return dict(row) if row else None
+
+    async def increment_token_attempts(self, token_id: str) -> None:
+        """Record a failed verification attempt against the token."""
+        async with self._session.begin():
+            await self._session.execute(
+                text(
+                    "UPDATE verification_tokens SET attempt_count = attempt_count + 1 "
+                    "WHERE id = :token_id"
+                ),
+                {"token_id": token_id},
+            )
+
+    async def consume_verification_token(self, token_id: str) -> None:
+        """Mark a verification token consumed (single use)."""
+        async with self._session.begin():
+            await self._session.execute(
+                text(
+                    "UPDATE verification_tokens SET consumed_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :token_id AND consumed_at IS NULL"
+                ),
+                {"token_id": token_id},
+            )
+
+    async def update_user_password(self, user_id: str, password_hash: str) -> None:
+        """Replace a user's password hash."""
+        async with self._session.begin():
+            await self._session.execute(
+                text(
+                    "UPDATE users SET password_hash = :password_hash, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = :user_id"
+                ),
+                {"user_id": user_id, "password_hash": password_hash},
+            )
+
+    async def revoke_all_refresh_sessions(self, user_id: str) -> int:
+        """Revoke every active refresh session for a user; return count revoked."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "UPDATE refresh_sessions SET revoked_at = CURRENT_TIMESTAMP "
+                    "WHERE user_id = :user_id AND revoked_at IS NULL"
+                ),
+                {"user_id": user_id},
+            )
+            revoked = int(getattr(result, "rowcount", 0) or 0)
+        return revoked

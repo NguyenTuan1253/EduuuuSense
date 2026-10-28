@@ -16,6 +16,7 @@ from app.services.auth_service import (
     AuthService,
     DuplicateEmailError,
     InvalidCredentialsError,
+    InvalidResetTokenError,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -24,6 +25,19 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # intentionally not added (no dependency additions without approval); this
 # validation covers format, not deliverability.
 _EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
+
+
+def validate_password_strength(value: str) -> str:
+    """Shared password policy (proposed default, pending Product Owner approval).
+
+    No document defines "password strength": minimum 8 characters with at
+    least one letter and one digit; maximum 128 to bound hashing cost.
+    """
+    has_letter = any(ch.isalpha() for ch in value)
+    has_digit = any(ch.isdigit() for ch in value)
+    if not (has_letter and has_digit):
+        raise ValueError("Password must contain at least one letter and one digit.")
+    return value
 
 
 class RegisterRequest(BaseModel):
@@ -52,14 +66,7 @@ class RegisterRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password_strength(cls, value: str) -> str:
-        # Proposed default policy pending Product Owner approval (no document
-        # defines "password strength"): minimum 8 characters with at least one
-        # letter and one digit; maximum 128 to bound hashing cost.
-        has_letter = any(ch.isalpha() for ch in value)
-        has_digit = any(ch.isdigit() for ch in value)
-        if not (has_letter and has_digit):
-            raise ValueError("Password must contain at least one letter and one digit.")
-        return value
+        return validate_password_strength(value)
 
 
 class RegisteredUser(BaseModel):
@@ -228,4 +235,59 @@ async def logout(
     service: AuthService = Depends(get_auth_service),
 ) -> SuccessResponse:
     await service.logout_session(refresh_token=payload.refresh_token)
+    return SuccessResponse()
+
+
+class PasswordResetRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=256)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        return validate_password_strength(value)
+
+
+@router.post(
+    "/password/reset-request",
+    response_model=SuccessResponse,
+    summary="Request a password-reset email (US 2.3)",
+)
+async def request_password_reset(
+    payload: PasswordResetRequest,
+    service: AuthService = Depends(get_auth_service),
+) -> SuccessResponse:
+    """Always 200 with an identical body, whether or not the email exists."""
+    await service.request_password_reset(email=payload.email)
+    return SuccessResponse()
+
+
+@router.post(
+    "/password/reset-confirm",
+    response_model=SuccessResponse,
+    summary="Confirm a password reset with a single-use token (US 2.3)",
+)
+async def confirm_password_reset(
+    payload: PasswordResetConfirmRequest,
+    service: AuthService = Depends(get_auth_service),
+) -> SuccessResponse:
+    try:
+        await service.confirm_password_reset(
+            raw_token=payload.token, new_password=payload.new_password
+        )
+    except InvalidResetTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset link.",
+        ) from exc
+
     return SuccessResponse()

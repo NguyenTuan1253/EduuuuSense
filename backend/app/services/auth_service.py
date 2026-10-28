@@ -26,6 +26,9 @@ from app.repositories.user_repo import UserRepository
 # email verification.
 VERIFICATION_TOKEN_TTL_HOURS = 24
 
+# US 2.3: "time-limited code/link (e.g., 15 min), single use".
+PASSWORD_RESET_TOKEN_TTL_MINUTES = 15
+
 
 class DuplicateEmailError(Exception):
     """Raised when registration attempts to reuse an already-registered email.
@@ -44,6 +47,10 @@ class InvalidCredentialsError(Exception):
 
 class AccountSuspendedError(Exception):
     """Raised when a deactivated (suspended) account attempts to log in."""
+
+
+class InvalidResetTokenError(Exception):
+    """Raised when a password-reset token is unknown, expired, or consumed."""
 
 
 class AuthService:
@@ -178,3 +185,49 @@ class AuthService:
         )
         if session_row is not None and session_row["revoked_at"] is None:
             await self._user_repo.revoke_refresh_session(str(session_row["id"]))
+
+    async def request_password_reset(self, *, email: str) -> None:
+        """Stage a single-use password-reset token for the account, if it exists.
+
+        The response is deliberately identical whether or not the email is
+        registered (no user enumeration, US 2.3/2.2). The raw token belongs to
+        the reset email (delivery deferred to the worker milestone).
+        """
+        normalized_email = email.strip().lower()
+        user = await self._user_repo.get_user_by_email(normalized_email)
+        if user is None:
+            return
+
+        _, token_hash = generate_verification_token()
+        expires_at = datetime.now(tz=UTC) + timedelta(minutes=PASSWORD_RESET_TOKEN_TTL_MINUTES)
+        await self._user_repo.create_verification_token(
+            user_id=str(user["id"]),
+            purpose="password_reset",
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+
+    async def confirm_password_reset(self, *, raw_token: str, new_password: str) -> None:
+        """Consume a password-reset token and rotate the password.
+
+        On success the password is re-hashed with Argon2id and EVERY active
+        refresh session for the user is revoked (US 2.3). Invalid, expired, or
+        consumed tokens raise the same generic error; each failed attempt on a
+        known token increments its attempt_count.
+        """
+        token_hash = hash_verification_token(raw_token)
+        token_row = await self._user_repo.get_verification_token_by_hash(
+            token_hash, purpose="password_reset"
+        )
+        if token_row is None:
+            raise InvalidResetTokenError("Invalid or expired reset link.")
+
+        now = datetime.now(tz=UTC)
+        if token_row["consumed_at"] is not None or token_row["expires_at"] <= now:
+            await self._user_repo.increment_token_attempts(str(token_row["id"]))
+            raise InvalidResetTokenError("Invalid or expired reset link.")
+
+        password_hash = hash_password(new_password)
+        await self._user_repo.update_user_password(str(token_row["user_id"]), password_hash)
+        await self._user_repo.consume_verification_token(str(token_row["id"]))
+        await self._user_repo.revoke_all_refresh_sessions(str(token_row["user_id"]))
