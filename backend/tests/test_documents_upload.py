@@ -12,6 +12,7 @@ from app.api.v1.documents import get_document_service
 from app.core.security import create_access_token
 from app.main import app
 from app.repositories.document_repo import DocumentRepository
+from app.clients.storage_client import StorageClient
 from app.services.document_service import (
     DocumentService,
     DocumentValidationError,
@@ -29,24 +30,26 @@ DOCX_BYTES = b"PK\x03\x04word-document-data"
 JPEG_BYTES = b"\xff\xd8\xffjpeg-data"
 
 
-class FakeStorage:
-    """In-memory object store double."""
+class FakeStorage(StorageClient):
+    """In-memory object store double (typed as the real client)."""
 
-    def __init__(self) -> None:
+    def __init__(self, client: Any = None) -> None:
+        self._client = client  # type: ignore[assignment]  # bypass the SDK constructor
+
         self.objects: dict[str, bytes] = {}
         self.removed: list[str] = []
         self.presigned: list[str] = []
 
-    def upload_bytes(self, key: str, data: bytes, content_type: str) -> str:
-        self.objects[key] = data
-        return key
+    def upload_bytes(self, object_key: str, data: bytes, content_type: str, length: int | None = None) -> str:
+        self.objects[object_key] = data
+        return object_key
 
-    def presigned_get_url(self, key: str) -> str:
-        self.presigned.append(key)
-        return f"https://minio/signed/{key}"
+    def presigned_get_url(self, object_key: str, expires_minutes: int = 15) -> str:
+        self.presigned.append(object_key)
+        return f"https://minio/signed/{object_key}"
 
-    def remove_object(self, key: str) -> None:
-        self.removed.append(key)
+    def remove_object(self, object_key: str) -> None:
+        self.removed.append(object_key)
 
 
 class FakeDocumentRepository(DocumentRepository):

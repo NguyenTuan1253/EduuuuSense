@@ -135,7 +135,7 @@ class DocumentService:
                 )
             except Exception:
                 # Compensate: never orphan bytes in the private bucket.
-                await self._storage.remove_object(object_key)
+                await run_storage_op(self._storage.remove_object, object_key)
                 raise
             row["id"] = str(row["id"])
             created.append(row)
