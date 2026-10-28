@@ -7,11 +7,16 @@ business logic lives in the auth service; all SQL lives in the user repository.
 import re
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.database import async_session_factory
-from app.services.auth_service import AuthService, DuplicateEmailError
+from app.services.auth_service import (
+    AccountSuspendedError,
+    AuthService,
+    DuplicateEmailError,
+    InvalidCredentialsError,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -72,6 +77,57 @@ class RegisterResponse(BaseModel):
     data: RegisteredUser
 
 
+class LoginRequest(BaseModel):
+    """Login input (US 2.2). Loose checks: policy applies at registration."""
+
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class TokenPairResponse(BaseModel):
+    """Success envelope for login: JWT access + refresh token pair."""
+
+    success: bool = True
+    data: TokenPair
+
+
+class AccessToken(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class AccessTokenResponse(BaseModel):
+    """Success envelope for refresh: a new access token only."""
+
+    success: bool = True
+    data: AccessToken
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=2048)
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=2048)
+
+
+class SuccessResponse(BaseModel):
+    success: bool = True
+
+
 async def get_auth_service() -> AsyncGenerator[AuthService, None]:
     """Request-scoped AuthService composed over one database session."""
     async with async_session_factory() as session:
@@ -107,3 +163,69 @@ async def register(
             is_email_verified=user["is_email_verified"],
         )
     )
+
+
+@router.post(
+    "/login",
+    response_model=TokenPairResponse,
+    summary="Log in with email and password (US 2.2)",
+)
+async def login(
+    payload: LoginRequest,
+    request: Request,
+    service: AuthService = Depends(get_auth_service),
+) -> TokenPairResponse:
+    user_agent = (request.headers.get("user-agent") or "")[:512] or None
+    client_host = request.client.host if request.client else None
+    try:
+        tokens = await service.login_user(
+            email=payload.email,
+            password=payload.password,
+            user_agent=user_agent,
+            ip_address=client_host,
+        )
+    except InvalidCredentialsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        ) from exc
+    except AccountSuspendedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been suspended.",
+        ) from exc
+
+    return TokenPairResponse(data=TokenPair(**tokens))
+
+
+@router.post(
+    "/refresh",
+    response_model=AccessTokenResponse,
+    summary="Exchange a refresh token for a new access token (US 2.2)",
+)
+async def refresh(
+    payload: RefreshRequest,
+    service: AuthService = Depends(get_auth_service),
+) -> AccessTokenResponse:
+    try:
+        token = await service.refresh_access_token(refresh_token=payload.refresh_token)
+    except InvalidCredentialsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session.",
+        ) from exc
+
+    return AccessTokenResponse(data=AccessToken(**token))
+
+
+@router.post(
+    "/logout",
+    response_model=SuccessResponse,
+    summary="Revoke the refresh session for the given token (US 2.2)",
+)
+async def logout(
+    payload: LogoutRequest,
+    service: AuthService = Depends(get_auth_service),
+) -> SuccessResponse:
+    await service.logout_session(refresh_token=payload.refresh_token)
+    return SuccessResponse()

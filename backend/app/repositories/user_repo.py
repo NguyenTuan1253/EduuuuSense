@@ -98,3 +98,90 @@ class UserRepository:
             "email": user_row["email"],
             "is_email_verified": user_row["is_email_verified"],
         }
+
+    async def get_user_by_email(self, email: str) -> dict[str, Any] | None:
+        """Fetch a user's auth-relevant fields by exact (normalized) email."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT id, email, password_hash, is_active, is_email_verified "
+                    "FROM users WHERE email = :email"
+                ),
+                {"email": email},
+            )
+            row = result.mappings().one_or_none()
+        return dict(row) if row else None
+
+    async def update_last_login(self, user_id: str) -> None:
+        """Record a successful login timestamp."""
+        async with self._session.begin():
+            await self._session.execute(
+                text("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = :user_id"),
+                {"user_id": user_id},
+            )
+
+    async def create_refresh_session(
+        self,
+        *,
+        user_id: str,
+        token_hash: str,
+        expires_at: datetime,
+        user_agent: str | None = None,
+        ip_address: str | None = None,
+    ) -> str:
+        """Persist a refresh session keyed by the hashed refresh token."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "INSERT INTO refresh_sessions (user_id, token_hash, expires_at, user_agent, ip_address) "
+                    "VALUES (:user_id, :token_hash, :expires_at, :user_agent, :ip_address) "
+                    "RETURNING id"
+                ),
+                {
+                    "user_id": user_id,
+                    "token_hash": token_hash,
+                    "expires_at": expires_at,
+                    "user_agent": user_agent,
+                    "ip_address": ip_address,
+                },
+            )
+            session_id = str(result.scalar_one())
+        return session_id
+
+    async def get_refresh_session_by_hash(self, token_hash: str) -> dict[str, Any] | None:
+        """Fetch a refresh session (with the owner's active flag) by token hash."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT rs.id, rs.user_id, rs.expires_at, rs.revoked_at, "
+                    "u.is_active AS user_is_active "
+                    "FROM refresh_sessions rs "
+                    "JOIN users u ON u.id = rs.user_id "
+                    "WHERE rs.token_hash = :token_hash"
+                ),
+                {"token_hash": token_hash},
+            )
+            row = result.mappings().one_or_none()
+        return dict(row) if row else None
+
+    async def revoke_refresh_session(self, session_id: str) -> None:
+        """Mark a refresh session revoked (no-op when already revoked)."""
+        async with self._session.begin():
+            await self._session.execute(
+                text(
+                    "UPDATE refresh_sessions SET revoked_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :session_id AND revoked_at IS NULL"
+                ),
+                {"session_id": session_id},
+            )
+
+    async def touch_refresh_session(self, session_id: str) -> None:
+        """Update the session's last-used timestamp."""
+        async with self._session.begin():
+            await self._session.execute(
+                text(
+                    "UPDATE refresh_sessions SET last_used_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :session_id"
+                ),
+                {"session_id": session_id},
+            )
