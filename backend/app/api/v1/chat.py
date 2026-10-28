@@ -18,11 +18,10 @@ async def get_chat_service(
     user_id: Annotated[str, Depends(get_current_user_id)],
 ) -> AsyncGenerator[ChatService, None]:
     """Request-scoped ChatService wired with the caller's plan for quotas."""
-    from app.repositories.user_repo import UserRepository
+    from app.services.user_service import UserService
 
     async with async_session_factory() as session:
-        user = await UserRepository(session).get_user_with_profile(user_id)
-        plan_code = str(user["current_plan_code"]) if user else "free"
+        plan_code = await UserService.from_session(session).get_current_plan_code(user_id)
         yield ChatService.from_session(session, plan_code=plan_code)
 
 

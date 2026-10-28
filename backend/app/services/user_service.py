@@ -66,3 +66,8 @@ class UserService:
         if not changes:
             raise ValueError("No profile fields provided.")
         return await self._user_repo.update_user_profile(user_id, changes)
+
+    async def get_current_plan_code(self, user_id: str) -> str:
+        """Plan code for quota decisions; unknown subjects default to free."""
+        row = await self._user_repo.get_user_with_profile(user_id)
+        return str(row["current_plan_code"]) if row else "free"
