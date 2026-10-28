@@ -94,3 +94,10 @@ class ChunkRepository:
             )
             rows = result.mappings().all()
         return [dict(row) for row in rows]
+
+    async def fetch_similar_chunks(self, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Execute a scoped retrieval statement (SQL text owned by the caller)."""
+        async with self._session.begin():
+            result = await self._session.execute(text(sql), params)
+            rows = result.mappings().all()
+        return [dict(row) for row in rows]
