@@ -24,6 +24,17 @@ DEFAULT_COVERAGE_THRESHOLD = 0.5
 _WORD = re.compile(r"[\w']+", re.UNICODE)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
+# Function words carry no evidence signal; keeping them creates overlap noise
+# (an answer sharing only "and"/"with" with a chunk would count as grounded).
+_STOPWORDS = {
+    "and", "the", "with", "for", "are", "was", "were", "has", "have", "had",
+    "not", "but", "all", "any", "can", "may", "its", "his", "her", "our",
+    "your", "their", "this", "that", "these", "those", "from", "into", "onto",
+    "over", "under", "about", "after", "before", "between", "during",
+    "without", "within", "per", "will", "shall", "does", "did", "done",
+    "là", "của", "và", "các", "cho", "từ",
+}
+
 
 @dataclass
 class Citation:
@@ -44,7 +55,11 @@ class GroundingVerdict:
 
 
 def _tokens(text: str) -> set[str]:
-    return {token.lower() for token in _WORD.findall(text) if len(token) > 2}
+    return {
+        token.lower()
+        for token in _WORD.findall(text)
+        if len(token) > 2 and token.lower() not in _STOPWORDS
+    }
 
 
 class GroundingChecker:
