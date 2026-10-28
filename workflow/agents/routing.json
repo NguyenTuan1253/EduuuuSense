@@ -1,0 +1,20 @@
+{
+  "version": "2.0.0",
+  "description": "Routing of EduSense backlog tasks to ZCode specialist subagents. Category defaults apply unless a task override is declared. Subagent names must match the ZCode agent configuration.",
+  "coordinator_agent": "backend-orchestrator",
+  "review_agent": "backend-qa-reviewer",
+  "defaults_by_category": {
+    "backend": "backend-engineer",
+    "db": "database-engineer",
+    "ai": "ai-rag-engineer",
+    "infra": "worker-scheduler-engineer",
+    "workflow": "backend-orchestrator",
+    "test": "backend-qa-reviewer"
+  },
+  "task_overrides": {
+    "TASK-M4-02": "ai-rag-engineer"
+  },
+  "override_rationale": {
+    "TASK-M4-02": "Atomic quota reservation and fail-closed Redis manager belongs to the AI Service quota flow owned by ai-rag-engineer."
+  }
+}
