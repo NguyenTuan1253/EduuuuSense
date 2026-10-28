@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import health
-from app.api.v1 import assignments, auth, calendar, chat, courses, documents, exams, schedules, users
+from app.api.v1 import ai_jobs, assignments, auth, calendar, chat, courses, documents, exams, schedules, users
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.lifespan import lifespan
@@ -37,3 +37,4 @@ app.include_router(schedules.router, prefix=settings.api_v1_prefix)
 app.include_router(calendar.router, prefix=settings.api_v1_prefix)
 app.include_router(documents.router, prefix=settings.api_v1_prefix)
 app.include_router(chat.router, prefix=settings.api_v1_prefix)
+app.include_router(ai_jobs.router, prefix=settings.api_v1_prefix)
