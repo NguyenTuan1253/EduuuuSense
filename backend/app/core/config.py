@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     gemini_embedding_model: str = Field(default="gemini-embedding-2", alias="GEMINI_EMBEDDING_MODEL")
     gemini_embedding_dimension: int = Field(default=768, alias="GEMINI_EMBEDDING_DIMENSION")
 
+    # SMTP email (reminders/verification; US 2.19). Unconfigured host = email skipped.
+    smtp_host: str | None = Field(default=None, alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str | None = Field(default=None, alias="SMTP_USER")
+    smtp_password: str | None = Field(default=None, alias="SMTP_PASSWORD")
+    smtp_from: str | None = Field(default=None, alias="SMTP_FROM")
+
     # Social Login (DECISION-PO-01): optional audience check for Google ID tokens
     google_oauth_client_id: str | None = Field(default=None, alias="GOOGLE_OAUTH_CLIENT_ID")
 
