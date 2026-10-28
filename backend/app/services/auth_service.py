@@ -18,6 +18,7 @@ from app.core.security import (
     hash_verification_token,
     verify_password,
 )
+from app.repositories.audit_repo import AuditRepository
 from app.repositories.user_repo import UserRepository
 
 # Proposed default, pending Product Owner approval: an email-verification
@@ -53,21 +54,91 @@ class InvalidResetTokenError(Exception):
     """Raised when a password-reset token is unknown, expired, or consumed."""
 
 
-class AuthService:
-    """Auth use cases. Collaborators are injected for testability."""
+class TooManyAttemptsError(Exception):
+    """Raised when login attempts exceed the NFR04 threshold for an identifier."""
 
-    def __init__(self, user_repo: UserRepository) -> None:
+
+class AuthService:
+    """Auth use cases. Collaborators are injected for testability.
+
+    ``audit_repo`` powers NFR04 login-attempt limiting and security-event
+    logging; it is optional so legacy constructions (older tests) keep working,
+    while the composed production path always provides it (fail-closed by
+    wiring, not by omission).
+    """
+
+    def __init__(
+        self,
+        user_repo: UserRepository,
+        audit_repo: AuditRepository | None = None,
+    ) -> None:
         self._user_repo = user_repo
+        self._audit_repo = audit_repo
 
     @classmethod
     def from_session(cls, session: Any) -> "AuthService":
-        """Compose the service with its repository over one session.
+        """Compose the service with its repositories over one session.
 
         Keeps the service as the only repository consumer so routers depend
         on services exclusively (architecture invariant: routers never import
         repositories).
         """
-        return cls(user_repo=UserRepository(session))
+        return cls(user_repo=UserRepository(session), audit_repo=AuditRepository(session))
+
+    async def _enforce_login_rate_limit(self, *, identifier_hash: str) -> None:
+        """Raise TooManyAttemptsError when the identifier is locked out (NFR04).
+
+        Lockout is anchored at the threshold-crossing failure: rejections
+        during a lockout record nothing, so the window cannot be refreshed by
+        the attacker (no self-extended DoS of the legitimate account).
+        """
+        if self._audit_repo is None:
+            return
+        state = await self._audit_repo.get_failure_state(
+            identifier_hash, settings.login_window_minutes
+        )
+        failures = int(state["failures"])
+        last_failure_at = state["last_failure_at"]
+        if failures < settings.login_max_failed_attempts or last_failure_at is None:
+            return
+        unlock_at = last_failure_at + timedelta(minutes=settings.login_lockout_minutes)
+        if datetime.now(tz=last_failure_at.tzinfo) < unlock_at:
+            raise TooManyAttemptsError("Too many failed attempts. Try again later.")
+
+    async def _record_failed_login(
+        self,
+        *,
+        identifier_hash: str,
+        actor_user_id: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Record one failed attempt as evidence and to the audit trail."""
+        if self._audit_repo is None:
+            return
+        await self._audit_repo.record_attempt(
+            identifier_hash=identifier_hash, ip_address=ip_address, succeeded=False
+        )
+        await self._audit_repo.record_security_event(
+            event_type="login_failed",
+            severity="warning",
+            actor_user_id=actor_user_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={"reason": "invalid_credentials"},
+        )
+        state = await self._audit_repo.get_failure_state(
+            identifier_hash, settings.login_window_minutes
+        )
+        if int(state["failures"]) == settings.login_max_failed_attempts:
+            await self._audit_repo.record_security_event(
+                event_type="login_locked",
+                severity="error",
+                actor_user_id=actor_user_id,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details={"reason": "attempt_threshold_reached"},
+            )
 
     async def register_user(self, *, email: str, password: str, full_name: str) -> dict[str, Any]:
         """Register a new student account and stage an email-verification token.
@@ -116,8 +187,17 @@ class AuthService:
         Only the SHA-256 hash of the refresh token is persisted.
         """
         normalized_email = email.strip().lower()
+        identifier_hash = hash_verification_token(normalized_email)
+        await self._enforce_login_rate_limit(identifier_hash=identifier_hash)
+
         user = await self._user_repo.get_user_by_email(normalized_email)
         if user is None or not verify_password(password, user["password_hash"]):
+            await self._record_failed_login(
+                identifier_hash=identifier_hash,
+                actor_user_id=str(user["id"]) if user else None,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
             raise InvalidCredentialsError("Invalid email or password.")
         if not user["is_active"]:
             raise AccountSuspendedError("This account has been suspended.")
@@ -134,6 +214,10 @@ class AuthService:
             ip_address=ip_address,
         )
         await self._user_repo.update_last_login(str(user["id"]))
+        if self._audit_repo is not None:
+            await self._audit_repo.record_attempt(
+                identifier_hash=identifier_hash, ip_address=ip_address, succeeded=True
+            )
 
         return {
             "access_token": access_token,

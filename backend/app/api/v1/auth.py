@@ -17,6 +17,7 @@ from app.services.auth_service import (
     DuplicateEmailError,
     InvalidCredentialsError,
     InvalidResetTokenError,
+    TooManyAttemptsError,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -200,6 +201,11 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account has been suspended.",
+        ) from exc
+    except TooManyAttemptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed attempts. Try again later.",
         ) from exc
 
     return TokenPairResponse(data=TokenPair(**tokens))

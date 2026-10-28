@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(default=15, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(default=7, alias="REFRESH_TOKEN_EXPIRE_DAYS")
 
+    # Login attempt limiting (NFR04). Proposed defaults pending PO approval:
+    # 5 failed attempts per identifier within a rolling 15-minute window
+    # triggers a 15-minute lockout anchored at the threshold-crossing attempt.
+    login_max_failed_attempts: int = Field(default=5, alias="LOGIN_MAX_FAILED_ATTEMPTS")
+    login_window_minutes: int = Field(default=15, alias="LOGIN_WINDOW_MINUTES")
+    login_lockout_minutes: int = Field(default=15, alias="LOGIN_LOCKOUT_MINUTES")
+
     # CORS
     cors_origins: list[str] | str = Field(
         default=["http://localhost:5173", "http://127.0.0.1:5173"],
