@@ -273,3 +273,64 @@ class UserRepository:
             )
             revoked = int(getattr(result, "rowcount", 0) or 0)
         return revoked
+
+    async def get_user_with_profile(self, user_id: str) -> dict[str, Any] | None:
+        """Fetch account fields joined with the profile for one user."""
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "SELECT u.id, u.email, u.is_email_verified, u.current_plan_code, "
+                    "p.full_name, p.display_name, p.avatar_url, p.phone_number, "
+                    "p.university, p.major, p.academic_year, p.updated_at AS profile_updated_at "
+                    "FROM users u "
+                    "LEFT JOIN user_profiles p ON p.user_id = u.id "
+                    "WHERE u.id = :user_id"
+                ),
+                {"user_id": user_id},
+            )
+            row = result.mappings().one_or_none()
+        return dict(row) if row else None
+
+    async def update_user_profile(self, user_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """UPSERT the profile with an explicit whitelist of provided changes."""
+        allowed = (
+            "full_name",
+            "display_name",
+            "avatar_url",
+            "phone_number",
+            "university",
+            "major",
+            "academic_year",
+        )
+        safe_changes = {k: v for k, v in changes.items() if k in allowed}
+        if not safe_changes:
+            raise ValueError("No supported profile fields to update.")
+
+        set_clause = ", ".join(f"{column} = :{column}" for column in safe_changes)
+        params: dict[str, Any] = {**safe_changes, "user_id": user_id}
+        async with self._session.begin():
+            result = await self._session.execute(
+                text(
+                    "INSERT INTO user_profiles (user_id, full_name) "
+                    "VALUES (:user_id, COALESCE(:full_name, '')) "
+                    "ON CONFLICT (user_id) DO NOTHING"
+                ),
+                {"user_id": user_id, "full_name": safe_changes.get("full_name")},
+            )
+            await self._session.execute(
+                text(
+                    f"UPDATE user_profiles SET {set_clause}, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE user_id = :user_id"
+                ),
+                params,
+            )
+            row_result = await self._session.execute(
+                text(
+                    "SELECT user_id, full_name, display_name, avatar_url, phone_number, "
+                    "university, major, academic_year, updated_at "
+                    "FROM user_profiles WHERE user_id = :user_id"
+                ),
+                {"user_id": user_id},
+            )
+            row = row_result.mappings().one()
+        return dict(row)

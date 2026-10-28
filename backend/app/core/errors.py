@@ -33,6 +33,7 @@ def create_error_response(
     code: str,
     message: str,
     details: Any = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     """Construct a standardized JSONResponse with ErrorEnvelope structure."""
     payload = {
@@ -43,7 +44,7 @@ def create_error_response(
             "details": details,
         },
     }
-    return JSONResponse(status_code=status_code, content=payload)
+    return JSONResponse(status_code=status_code, content=payload, headers=headers)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -59,6 +60,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             code=code,
             message=message,
             details=details,
+            headers=dict(exc.headers) if exc.headers else None,
         )
 
     @app.exception_handler(RequestValidationError)
