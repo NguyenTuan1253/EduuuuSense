@@ -185,8 +185,6 @@ async def test_unparseable_plan_output_fails_job_and_refunds() -> None:
     assert job_repo.jobs["job-1"]["error_code"] == "invalid_model_output"
     assert quota.refunded == 1
     assert plan_repo.created == []
-
-
 @pytest.mark.asyncio
 async def test_item_acceptance_stamps_accepted_at_and_completion_stamps_completed_at() -> None:
     """M5-06: lifecycle transitions keep the audit stamps consistent."""
