@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.database import async_session_factory
-from app.repositories.user_repo import UserRepository
 from app.services.auth_service import AuthService, DuplicateEmailError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -74,9 +73,9 @@ class RegisterResponse(BaseModel):
 
 
 async def get_auth_service() -> AsyncGenerator[AuthService, None]:
-    """Request-scoped AuthService wired to a UserRepository over one session."""
+    """Request-scoped AuthService composed over one database session."""
     async with async_session_factory() as session:
-        yield AuthService(user_repo=UserRepository(session))
+        yield AuthService.from_session(session)
 
 
 @router.post(

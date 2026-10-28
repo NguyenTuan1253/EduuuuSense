@@ -30,6 +30,16 @@ class AuthService:
     def __init__(self, user_repo: UserRepository) -> None:
         self._user_repo = user_repo
 
+    @classmethod
+    def from_session(cls, session: Any) -> "AuthService":
+        """Compose the service with its repository over one session.
+
+        Keeps the service as the only repository consumer so routers depend
+        on services exclusively (architecture invariant: routers never import
+        repositories).
+        """
+        return cls(user_repo=UserRepository(session))
+
     async def register_user(self, *, email: str, password: str, full_name: str) -> dict[str, Any]:
         """Register a new student account and stage an email-verification token.
 
