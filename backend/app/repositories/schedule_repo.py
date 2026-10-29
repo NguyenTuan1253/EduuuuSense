@@ -6,6 +6,7 @@ Ownership enforced through the courses join in every statement.
 from typing import Any
 
 from sqlalchemy import text
+from app.repositories.coerce import as_date, as_time
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -28,6 +29,10 @@ class ScheduleRepository:
         end_date: str,
     ) -> dict[str, Any] | None:
         """Insert a weekly slot under an owned course (None when missing)."""
+        coerced_start = as_time(start_time)
+        coerced_end = as_time(end_time)
+        coerced_from = as_date(start_date)
+        coerced_to = as_date(end_date)
         async with self._session.begin():
             owned = await self._session.execute(
                 text("SELECT 1 FROM courses WHERE id = :course_id AND user_id = :user_id"),
@@ -47,11 +52,11 @@ class ScheduleRepository:
                 {
                     "course_id": course_id,
                     "day_of_week": day_of_week,
-                    "start_time": start_time,
-                    "end_time": end_time,
+                    "start_time": coerced_start,
+                    "end_time": coerced_end,
                     "location": location,
-                    "start_date": start_date,
-                    "end_date": end_date,
+                    "start_date": coerced_from,
+                    "end_date": coerced_to,
                 },
             )
             row = result.mappings().one()
@@ -111,6 +116,14 @@ class ScheduleRepository:
         """Apply whitelisted changes to an owned weekly slot."""
         allowed = ("day_of_week", "start_time", "end_time", "location", "start_date", "end_date")
         safe_changes = {k: v for k, v in changes.items() if k in allowed}
+        if "start_time" in safe_changes:
+            safe_changes["start_time"] = as_time(safe_changes["start_time"])
+        if "end_time" in safe_changes:
+            safe_changes["end_time"] = as_time(safe_changes["end_time"])
+        if "start_date" in safe_changes:
+            safe_changes["start_date"] = as_date(safe_changes["start_date"])
+        if "end_date" in safe_changes:
+            safe_changes["end_date"] = as_date(safe_changes["end_date"])
         if not safe_changes:
             return await self.get_schedule(user_id, schedule_id)
 

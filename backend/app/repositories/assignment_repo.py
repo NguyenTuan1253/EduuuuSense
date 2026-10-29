@@ -7,6 +7,7 @@ assignment is reachable only through its owner's course.
 from typing import Any
 
 from sqlalchemy import text
+from app.repositories.coerce import as_datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -27,6 +28,7 @@ class AssignmentRepository:
         priority: str,
     ) -> dict[str, Any] | None:
         """Insert an assignment under an owned course (None when course missing)."""
+        due_at = as_datetime(due_at)
         async with self._session.begin():
             owned = await self._session.execute(
                 text("SELECT 1 FROM courses WHERE id = :course_id AND user_id = :user_id"),
@@ -96,6 +98,8 @@ class AssignmentRepository:
         """Apply whitelisted changes to an owned assignment."""
         allowed = ("title", "description", "due_at", "priority", "status", "completed_at")
         safe_changes = {k: v for k, v in changes.items() if k in allowed}
+        if "due_at" in safe_changes:
+            safe_changes["due_at"] = as_datetime(safe_changes["due_at"])
         if not safe_changes:
             return await self.get_assignment(user_id, assignment_id)
 

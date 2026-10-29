@@ -6,6 +6,7 @@ Ownership enforced through the courses join in every statement.
 from typing import Any
 
 from sqlalchemy import text
+from app.repositories.coerce import as_datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -27,6 +28,7 @@ class ExamRepository:
         notes: str | None,
     ) -> dict[str, Any] | None:
         """Insert an exam under an owned course (None when course missing)."""
+        exam_at = as_datetime(exam_at)
         async with self._session.begin():
             owned = await self._session.execute(
                 text("SELECT 1 FROM courses WHERE id = :course_id AND user_id = :user_id"),
@@ -89,6 +91,8 @@ class ExamRepository:
         """Apply whitelisted changes to an owned exam."""
         allowed = ("title", "exam_at", "duration_minutes", "location", "notes")
         safe_changes = {k: v for k, v in changes.items() if k in allowed}
+        if "exam_at" in safe_changes:
+            safe_changes["exam_at"] = as_datetime(safe_changes["exam_at"])
         if not safe_changes:
             return await self.get_exam(user_id, exam_id)
 

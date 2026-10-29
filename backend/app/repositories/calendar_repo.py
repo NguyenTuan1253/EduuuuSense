@@ -7,6 +7,7 @@ Ownership is enforced inside every query (courses join).
 from typing import Any
 
 from sqlalchemy import text
+from app.repositories.coerce import as_date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -20,6 +21,7 @@ class CalendarRepository:
         self, user_id: str, start_date: str, end_date: str
     ) -> list[dict[str, Any]]:
         """Weekly slots active at any point in [start_date, end_date]."""
+        range_start, range_end = as_date(start_date), as_date(end_date)
         async with self._session.begin():
             result = await self._session.execute(
                 text(
@@ -29,7 +31,7 @@ class CalendarRepository:
                     "WHERE c.user_id = :user_id "
                     "AND s.start_date <= :end_date AND s.end_date >= :start_date"
                 ),
-                {"user_id": user_id, "start_date": start_date, "end_date": end_date},
+                {"user_id": user_id, "start_date": range_start, "end_date": range_end},
             )
             rows = result.mappings().all()
         return [dict(row) for row in rows]
@@ -38,6 +40,7 @@ class CalendarRepository:
         self, user_id: str, start_date: str, end_date: str
     ) -> list[dict[str, Any]]:
         """Exams whose local datetime falls within the inclusive date range."""
+        range_start, range_end = as_date(start_date), as_date(end_date)
         async with self._session.begin():
             result = await self._session.execute(
                 text(
@@ -47,7 +50,7 @@ class CalendarRepository:
                     "WHERE c.user_id = :user_id "
                     "AND (e.exam_at AT TIME ZONE 'UTC')::date BETWEEN :start_date AND :end_date"
                 ),
-                {"user_id": user_id, "start_date": start_date, "end_date": end_date},
+                {"user_id": user_id, "start_date": range_start, "end_date": range_end},
             )
             rows = result.mappings().all()
         return [dict(row) for row in rows]
@@ -56,6 +59,7 @@ class CalendarRepository:
         self, user_id: str, start_date: str, end_date: str
     ) -> list[dict[str, Any]]:
         """Assignment deadlines within the inclusive date range."""
+        range_start, range_end = as_date(start_date), as_date(end_date)
         async with self._session.begin():
             result = await self._session.execute(
                 text(
@@ -65,7 +69,7 @@ class CalendarRepository:
                     "WHERE c.user_id = :user_id AND a.due_at IS NOT NULL "
                     "AND (a.due_at AT TIME ZONE 'UTC')::date BETWEEN :start_date AND :end_date"
                 ),
-                {"user_id": user_id, "start_date": start_date, "end_date": end_date},
+                {"user_id": user_id, "start_date": range_start, "end_date": range_end},
             )
             rows = result.mappings().all()
         return [dict(row) for row in rows]

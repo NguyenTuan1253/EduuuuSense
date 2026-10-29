@@ -3,6 +3,7 @@
 from typing import Any
 
 from sqlalchemy import text
+from app.repositories.coerce import as_date, as_datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -33,6 +34,16 @@ class StudyPlanRepository:
         items: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Atomically create the plan and its scheduled items."""
+        plan_start, plan_end = as_date(start_date), as_date(end_date)
+        normalized_items = [
+            {
+                **item,
+                "scheduled_start": as_datetime(item["scheduled_start"]),
+                "scheduled_end": as_datetime(item["scheduled_end"]) if item.get("scheduled_end") else None,
+            }
+            for item in items
+        ]
+        items = normalized_items
         async with self._session.begin():
             plan_result = await self._session.execute(
                 text(
@@ -47,8 +58,8 @@ class StudyPlanRepository:
                     "user_id": user_id,
                     "name": name,
                     "description": description,
-                    "start_date": start_date,
-                    "end_date": end_date,
+                    "start_date": plan_start,
+                    "end_date": plan_end,
                     "generated_by_ai": generated_by_ai,
                 },
             )
